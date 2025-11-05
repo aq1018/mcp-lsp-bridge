@@ -62,11 +62,14 @@ func (b *MCPLSPBridge) validateAndConnectClient(language string, serverConfig ty
 
 	startTime := time.Now()
 
-	// Get current working directory
-	// dir, err := os.Getwd()
-	// if err != nil {
-	// 	return nil, fmt.Errorf("failed to get current directory: %w", err)
-	// }
+	// Get current working directory for debugging
+	cwd, err := os.Getwd()
+	if err != nil {
+		logger.Error(fmt.Sprintf("Failed to get current working directory: %v", err))
+	} else {
+		logger.Debug(fmt.Sprintf("validateAndConnectClient: Bridge process CWD: %s", cwd))
+	}
+
 	dirs := b.AllowedDirectories()
 	dir := dirs[0] // Get first directory (for now)
 
@@ -93,6 +96,9 @@ func (b *MCPLSPBridge) validateAndConnectClient(language string, serverConfig ty
 			lastErr = fmt.Errorf("failed to create language client on attempt %d: %w", attempt+1, err)
 			continue
 		}
+
+		// Set working directory so relative paths in config work for all team members
+		client.SetWorkingDirectory(dir)
 
 		_, err = client.Connect()
 		if err != nil {
@@ -133,17 +139,28 @@ func (b *MCPLSPBridge) validateAndConnectClient(language string, serverConfig ty
 			},
 			// RootUri:          &root_uri,
 			WorkspaceFolders: &workspaceFolders,
-			// Capabilities: protocol.ClientCapabilities{
-			// 	TextDocument: &protocol.TextDocumentClientCapabilities{
-			// 		SignatureHelp: &protocol.SignatureHelpClientCapabilities{},
-			// 	},
-			// },
+			Capabilities: protocol.ClientCapabilities{
+				Workspace: &protocol.WorkspaceClientCapabilities{
+					Configuration:    true, // Required for Tailwind CSS LSP and dynamic configuration
+					WorkspaceFolders: true,
+				},
+				TextDocument: &protocol.TextDocumentClientCapabilities{
+					Hover:         &protocol.HoverClientCapabilities{},
+					Completion:    &protocol.CompletionClientCapabilities{},
+					SignatureHelp: &protocol.SignatureHelpClientCapabilities{},
+				},
+			},
 		}
 
+		logger.Debug(fmt.Sprintf("INIT: Sending capabilities - workspace.configuration=%v, workspace.workspaceFolders=%v",
+			params.Capabilities.Workspace.Configuration, params.Capabilities.Workspace.WorkspaceFolders))
+
 		// Apply any initialization options from the configuration
-		// if serverConfig.GetInitializationOptions() != nil {
-		// 	params.InitializationOptions = serverConfig.GetInitializationOptions()
-		// }
+		if serverConfig.GetInitializationOptions() != nil {
+			params.InitializationOptions = serverConfig.GetInitializationOptions()
+			// Store initialization settings in the client for workspace/configuration requests
+			client.SetInitializationSettings(serverConfig.GetInitializationOptions())
+		}
 
 		// Check connection status before initialize
 		metrics := client.GetMetrics()
@@ -569,6 +586,13 @@ func (b *MCPLSPBridge) GetHoverInformation(uri string, line, character uint32) (
 	if err != nil {
 		// Continue anyway, as some servers might still work without explicit didOpen
 		logger.Error("GetHoverInformation: Failed to open document", fmt.Sprintf("URI: %s, Error: %v", normalizedURI, err))
+	}
+
+	// Check if server supports hover before making the request
+	serverCaps := client.ServerCapabilities()
+	if serverCaps.HoverProvider == nil {
+		logger.Debug(fmt.Sprintf("GetHoverInformation: Server for language %s does not support hover", string(*language)))
+		return nil, nil // Return nil instead of error for graceful degradation
 	}
 
 	result, err := client.Hover(normalizedURI, line, character)

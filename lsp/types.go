@@ -67,7 +67,9 @@ type LanguageClient struct {
 
 	tokenParser types.SemanticTokensParserProvider
 
-	workspacePaths []string
+	workspacePaths        []string
+	initializationOptions map[string]interface{}
+	workingDir            string // Working directory for the language server process
 
 	// Connection management
 	command         string

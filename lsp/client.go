@@ -77,6 +77,20 @@ func (lc *LanguageClient) Connect() (types.LanguageClientInterface, error) {
 	// Start the external process
 	cmd := exec.CommandContext(ctx, lc.command, lc.args...) // #nosec G204
 
+	// Set working directory for the language server process
+	// This allows relative paths in the config to work correctly
+	if lc.workingDir != "" {
+		cmd.Dir = lc.workingDir
+		logger.Debug(fmt.Sprintf("Language server command: %s %v", lc.command, lc.args))
+		logger.Debug(fmt.Sprintf("Language server will run from workingDir: %s", lc.workingDir))
+	} else {
+		cwd, err := os.Getwd()
+		if err == nil {
+			logger.Debug(fmt.Sprintf("Language server command: %s %v", lc.command, lc.args))
+			logger.Debug(fmt.Sprintf("Language server will run from process CWD: %s (workingDir not set)", cwd))
+		}
+	}
+
 	// CRITICAL: Set up the command to run in a clean environment
 	// This prevents terminal echo and other interactive behavior
 	cmd.Env = append(os.Environ(),
@@ -156,8 +170,10 @@ func (lc *LanguageClient) Connect() (types.LanguageClientInterface, error) {
 		stdout: stdout,
 	}
 
-	// Create handler
-	handler := &ClientHandler{}
+	// Create handler with reference to this client for configuration
+	handler := &ClientHandler{
+		client: lc,
+	}
 
 	// Create JSON-RPC connection using VSCode Object Codec for LSP headers
 	stream := jsonrpc2.NewBufferedStream(readWriteCloser, jsonrpc2.VSCodeObjectCodec{})
@@ -260,6 +276,24 @@ func (lc *LanguageClient) ProjectRoots() []string {
 }
 func (lc *LanguageClient) SetProjectRoots(paths []string) {
 	lc.workspacePaths = paths
+}
+
+// InitializationSettings returns the initialization options/settings for this client
+func (lc *LanguageClient) InitializationSettings() map[string]interface{} {
+	if lc.initializationOptions == nil {
+		return make(map[string]interface{})
+	}
+	return lc.initializationOptions
+}
+
+// SetInitializationSettings sets the initialization options for this client
+func (lc *LanguageClient) SetInitializationSettings(settings map[string]interface{}) {
+	lc.initializationOptions = settings
+}
+
+// SetWorkingDirectory sets the working directory for the language server process
+func (lc *LanguageClient) SetWorkingDirectory(dir string) {
+	lc.workingDir = dir
 }
 
 // Close closes the language client and cleans up resources
