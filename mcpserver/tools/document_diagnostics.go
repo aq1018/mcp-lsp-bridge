@@ -90,22 +90,31 @@ func formatDocumentDiagnostics(report *protocol.DocumentDiagnosticReport, uri st
 		return fmt.Sprintf("Error parsing diagnostic report: %v", err)
 	}
 
+	// Log the actual JSON structure for debugging
+	logger.Debug(fmt.Sprintf("Diagnostic report JSON: %s", string(reportBytes)))
+
 	// Try to parse as RelatedFullDocumentDiagnosticReport first
 	var fullReport protocol.RelatedFullDocumentDiagnosticReport
 	if err := json.Unmarshal(reportBytes, &fullReport); err == nil && len(fullReport.Items) > 0 {
 		return formatFullDiagnosticReport(&fullReport, uri)
+	} else if err != nil {
+		logger.Debug(fmt.Sprintf("Failed to parse as RelatedFullDocumentDiagnosticReport: %v", err))
+	} else {
+		logger.Debug("Parsed as RelatedFullDocumentDiagnosticReport but has 0 items")
 	}
 
 	// Try to parse as RelatedUnchangedDocumentDiagnosticReport
 	var unchangedReport protocol.RelatedUnchangedDocumentDiagnosticReport
 	if err := json.Unmarshal(reportBytes, &unchangedReport); err == nil {
 		return formatUnchangedDiagnosticReport(&unchangedReport, uri)
+	} else {
+		logger.Debug(fmt.Sprintf("Failed to parse as RelatedUnchangedDocumentDiagnosticReport: %v", err))
 	}
 
-	// If we can't parse it, show basic info
+	// If we can't parse it, show basic info with the raw JSON
 	result.WriteString("Report Type: Document Diagnostic Report\n")
 	result.WriteString("LSP 3.17+ document diagnostics received successfully.\n")
-	result.WriteString("Raw report data available but type parsing needs refinement.\n")
+	result.WriteString(fmt.Sprintf("\nRaw JSON (for debugging):\n%s\n", string(reportBytes)))
 
 	return result.String()
 }

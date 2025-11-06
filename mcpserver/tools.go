@@ -49,6 +49,12 @@ func RegisterAllTools(mcpServer tools.ToolServer, bridge interfaces.BridgeInterf
 	// Document diagnostics
 	tools.RegisterDocumentDiagnosticsTool(mcpServer, bridge)
 
+	// Document lifecycle tools
+	tools.RegisterDocumentOpenTool(mcpServer, bridge)
+	tools.RegisterDocumentChangeTool(mcpServer, bridge)
+	tools.RegisterDocumentSaveTool(mcpServer, bridge)
+	tools.RegisterDocumentCloseTool(mcpServer, bridge)
+
 	// Diagnostic tools
 	tools.RegisterMCPLSPBridgeDiagnosticsTool(mcpServer, bridge)
 }
