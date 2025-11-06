@@ -46,6 +46,12 @@ func NewLanguageClient(command string, args ...string) (*LanguageClient, error) 
 		restartDelay:          1 * time.Second,
 
 		status: StatusConnecting,
+
+		// Initialize diagnostic cache
+		diagnosticCache: make(map[protocol.DocumentUri][]protocol.Diagnostic),
+
+		// Initialize open documents tracking
+		openDocuments: make(map[protocol.DocumentUri]bool),
 	}
 
 	return &client, nil
@@ -175,6 +181,9 @@ func (lc *LanguageClient) Connect() (types.LanguageClientInterface, error) {
 		client: lc,
 	}
 
+	// Store handler reference so it can be accessed later
+	lc.Handler = handler
+
 	// Create JSON-RPC connection using VSCode Object Codec for LSP headers
 	stream := jsonrpc2.NewBufferedStream(readWriteCloser, jsonrpc2.VSCodeObjectCodec{})
 	logger.Debug(fmt.Sprintf("STATUS: About to create jsonrpc2.NewConn with ctx.Err()=%v", ctx.Err()))
@@ -289,6 +298,16 @@ func (lc *LanguageClient) InitializationSettings() map[string]interface{} {
 // SetInitializationSettings sets the initialization options for this client
 func (lc *LanguageClient) SetInitializationSettings(settings map[string]interface{}) {
 	lc.initializationOptions = settings
+}
+
+// SetWorkspaceConfiguration sets the workspace configuration sections for this client
+func (lc *LanguageClient) SetWorkspaceConfiguration(config map[string]interface{}) {
+	lc.workspaceConfiguration = config
+}
+
+// GetWorkspaceConfiguration returns the workspace configuration for this client
+func (lc *LanguageClient) GetWorkspaceConfiguration() map[string]interface{} {
+	return lc.workspaceConfiguration
 }
 
 // SetWorkingDirectory sets the working directory for the language server process
@@ -497,4 +516,45 @@ func (lc *LanguageClient) SetupSemanticTokens() error {
 
 func (lc *LanguageClient) TokenParser() types.SemanticTokensParserProvider {
 	return lc.tokenParser
+}
+
+// GetCachedDiagnostics retrieves diagnostics from cache for a specific URI
+func (lc *LanguageClient) GetCachedDiagnostics(uri protocol.DocumentUri) []protocol.Diagnostic {
+	lc.diagnosticMutex.RLock()
+	defer lc.diagnosticMutex.RUnlock()
+
+	diagnostics, exists := lc.diagnosticCache[uri]
+	if !exists {
+		// Log cache miss with details about what's actually in the cache
+		logger.Debug(fmt.Sprintf("Cache miss for URI: %s", uri))
+		if len(lc.diagnosticCache) > 0 {
+			logger.Debug(fmt.Sprintf("Cache contains %d URI(s):", len(lc.diagnosticCache)))
+			for cachedURI := range lc.diagnosticCache {
+				logger.Debug(fmt.Sprintf("  - %s", cachedURI))
+			}
+		} else {
+			logger.Debug("Cache is empty")
+		}
+		return []protocol.Diagnostic{}
+	}
+
+	// Return a copy to prevent external modifications
+	result := make([]protocol.Diagnostic, len(diagnostics))
+	copy(result, diagnostics)
+	return result
+}
+
+// GetAllCachedDiagnostics retrieves all cached diagnostics
+func (lc *LanguageClient) GetAllCachedDiagnostics() map[protocol.DocumentUri][]protocol.Diagnostic {
+	lc.diagnosticMutex.RLock()
+	defer lc.diagnosticMutex.RUnlock()
+
+	// Return a deep copy to prevent external modifications
+	result := make(map[protocol.DocumentUri][]protocol.Diagnostic)
+	for uri, diagnostics := range lc.diagnosticCache {
+		diagCopy := make([]protocol.Diagnostic, len(diagnostics))
+		copy(diagCopy, diagnostics)
+		result[uri] = diagCopy
+	}
+	return result
 }

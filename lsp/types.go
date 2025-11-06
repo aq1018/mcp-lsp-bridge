@@ -18,6 +18,7 @@ type Language string
 type GlobalConfig struct {
 	LogPath            string `json:"log_file_path"`
 	LogLevel           string `json:"log_level"`
+	LogOutput          string `json:"log_output"` // "file", "stderr", "both"
 	MaxLogFiles        int    `json:"max_log_files"`
 	MaxRestartAttempts int    `json:"max_restart_attempts"`
 	RestartDelayMs     int    `json:"restart_delay_ms"`
@@ -49,10 +50,13 @@ func (c *LanguageServerConfig) GetInitializationOptions() map[string]interface{}
 
 // LSPServerConfig represents the complete LSP server configuration
 type LSPServerConfig struct {
-	Global               GlobalConfig                                  `json:"global"`
-	LanguageServers      map[types.LanguageServer]LanguageServerConfig `json:"language_servers"`
-	LanguageServerMap    map[types.LanguageServer][]types.Language     `json:"language_server_map,omitempty"`
-	ExtensionLanguageMap map[string]types.Language                     `json:"extension_language_map,omitempty"`
+	Imports                []string                                      `json:"imports,omitempty"`
+	Global                 GlobalConfig                                  `json:"global"`
+	LanguageServers        map[types.LanguageServer]LanguageServerConfig `json:"language_servers"`
+	WorkspaceConfiguration map[string]interface{}                        `json:"workspace_configuration,omitempty"`
+	LanguageServerMap      map[types.LanguageServer][]types.Language     `json:"language_server_map,omitempty"`
+	ExtensionLanguageMap   map[string]types.Language                     `json:"extension_language_map,omitempty"`
+	PreferredFormatters    map[string]string                             `json:"preferred_formatters,omitempty"`
 }
 
 // LanguageClient wraps a Language Server Protocol client connection
@@ -67,9 +71,10 @@ type LanguageClient struct {
 
 	tokenParser types.SemanticTokensParserProvider
 
-	workspacePaths        []string
-	initializationOptions map[string]interface{}
-	workingDir            string // Working directory for the language server process
+	workspacePaths         []string
+	initializationOptions  map[string]interface{}
+	workspaceConfiguration map[string]interface{} // Workspace configuration sections
+	workingDir             string                  // Working directory for the language server process
 
 	// Connection management
 	command         string
@@ -90,4 +95,15 @@ type LanguageClient struct {
 	connectionTimeout     time.Duration
 	idleTimeout           time.Duration
 	restartDelay          time.Duration
+
+	// Diagnostic cache for push-based diagnostics
+	diagnosticCache map[protocol.DocumentUri][]protocol.Diagnostic
+	diagnosticMutex sync.RWMutex
+
+	// Handler for LSP notifications
+	Handler *ClientHandler
+
+	// Track open documents to prevent duplicate didOpen notifications
+	openDocuments      map[protocol.DocumentUri]bool
+	openDocumentsMutex sync.RWMutex
 }

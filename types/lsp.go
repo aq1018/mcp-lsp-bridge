@@ -131,6 +131,7 @@ type LanguageServer string
 type GlobalConfig struct {
 	LogPath            string `json:"log_file_path"`
 	LogLevel           string `json:"log_level"`
+	LogOutput          string `json:"log_output"` // "file", "stderr", "both"
 	MaxLogFiles        int    `json:"max_log_files"`
 	MaxRestartAttempts int    `json:"max_restart_attempts"`
 	RestartDelayMs     int    `json:"restart_delay_ms"`
