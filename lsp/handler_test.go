@@ -6,8 +6,9 @@ import (
 
 // MockClientContext implements ClientContextProvider for testing
 type MockClientContext struct {
-	projectRoots []string
-	settings     map[string]interface{}
+	projectRoots           []string
+	settings               map[string]interface{}
+	workspaceConfiguration map[string]interface{}
 }
 
 func (m *MockClientContext) ProjectRoots() []string {
@@ -16,6 +17,10 @@ func (m *MockClientContext) ProjectRoots() []string {
 
 func (m *MockClientContext) InitializationSettings() map[string]interface{} {
 	return m.settings
+}
+
+func (m *MockClientContext) GetWorkspaceConfiguration() map[string]interface{} {
+	return m.workspaceConfiguration
 }
 
 func TestBuildConfigurationResponse_ESLint(t *testing.T) {

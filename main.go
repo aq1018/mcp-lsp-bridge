@@ -27,14 +27,21 @@ import (
 	"rockerboo/mcp-lsp-bridge/lsp"
 	"rockerboo/mcp-lsp-bridge/mcpserver"
 	"rockerboo/mcp-lsp-bridge/security"
-	"rockerboo/mcp-lsp-bridge/types"
 
 	"github.com/mark3labs/mcp-go/server"
 )
 
-// tryLoadConfig attempts to load configuration from multiple locations with security validation
-func tryLoadConfig(primaryPath, configDir string, allowedDirectories ...[]string) (*lsp.LSPServerConfig, error) {
+// configAttempt tracks an attempt to load a config file
+type configAttempt struct {
+	path   string
+	exists bool
+	err    error
+}
+
+// tryLoadConfig attempts to load configuration from multiple locations with security validation and template substitution
+func tryLoadConfig(primaryPath, configDir, workspaceRoot string, allowedDirectories ...[]string) (*lsp.LSPServerConfig, []configAttempt, error) {
 	var configAllowedDirectories []string
+	var attempts []configAttempt
 
 	// If allowed directories are not provided, use default
 	if len(allowedDirectories) > 0 {
@@ -43,36 +50,59 @@ func tryLoadConfig(primaryPath, configDir string, allowedDirectories ...[]string
 		// Get current working directory for validation
 		cwd, err := os.Getwd()
 		if err != nil {
-			return nil, fmt.Errorf("failed to get current working directory: %w", err)
+			return nil, attempts, fmt.Errorf("failed to get current working directory: %w", err)
 		}
 
 		// Get allowed directories for config files
 		configAllowedDirectories = security.GetConfigAllowedDirectories(configDir, cwd)
 	}
 
-	// Try primary path first (from command line or default)
-	if config, err := lsp.LoadLSPConfig(primaryPath, configAllowedDirectories); err == nil {
-		return config, nil
-	}
+	// Build list of all paths to try
+	pathsToTry := []string{primaryPath}
 
-	// If primary path fails and it's not the same as the fallback, try fallback locations
+	// Add fallback paths (excluding example config)
 	fallbackPaths := []string{
 		"lsp_config.json",                       // Current directory
 		filepath.Join(configDir, "config.json"), // Alternative name in config dir
-		"lsp_config.example.json",               // Example config in current dir
 	}
 
 	for _, fallbackPath := range fallbackPaths {
 		if fallbackPath != primaryPath {
-			if config, err := lsp.LoadLSPConfig(fallbackPath, configAllowedDirectories); err == nil {
-				logger.Warn(fmt.Sprintf("INFO: Loaded configuration from fallback location: %s\n", fallbackPath))
-				fmt.Fprintf(os.Stderr, "INFO: Loaded configuration from fallback location: %s\n", fallbackPath)
-				return config, nil
-			}
+			pathsToTry = append(pathsToTry, fallbackPath)
 		}
 	}
 
-	return nil, errors.New("no valid configuration found")
+	// Try each path and track attempts
+	for i, configPath := range pathsToTry {
+		attempt := configAttempt{path: configPath}
+
+		// Check if file exists
+		if _, err := os.Stat(configPath); os.IsNotExist(err) {
+			attempt.exists = false
+			attempt.err = fmt.Errorf("file does not exist")
+			attempts = append(attempts, attempt)
+			continue
+		}
+
+		attempt.exists = true
+
+		// Try to load the config
+		config, err := lsp.LoadLSPConfig(configPath, configAllowedDirectories, workspaceRoot)
+		if err == nil {
+			// Success!
+			if i > 0 {
+				// Loaded from fallback, notify user
+				logger.Warn(fmt.Sprintf("INFO: Loaded configuration from fallback location: %s\n", configPath))
+				fmt.Fprintf(os.Stderr, "INFO: Loaded configuration from fallback location: %s\n", configPath)
+			}
+			return config, attempts, nil
+		}
+
+		attempt.err = err
+		attempts = append(attempts, attempt)
+	}
+
+	return nil, attempts, errors.New("no valid configuration found")
 }
 
 // validateCommandLineArgs validates command line arguments for security
@@ -141,50 +171,42 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Load LSP configuration
-	// Attempt to load config from multiple locations
-	config, err := tryLoadConfig(confPath, configDir)
-	logConfig := logger.LoggerConfig{}
-
+	// Get current working directory for template substitution
+	cwd, err := os.Getwd()
 	if err != nil {
-		// Detailed error logging
-		fullErrMsg := fmt.Sprintf("CRITICAL: Failed to load LSP config from '%s': %v", confPath, err)
-		fmt.Fprintln(os.Stderr, fullErrMsg)
-		log.Println(fullErrMsg)
+		log.Fatalf("Failed to get current working directory: %v", err)
+	}
 
-		// Set default config when config load fails
-		logConfig = logger.LoggerConfig{
-			LogPath:     defaultLogPath,
-			LogLevel:    "debug",
-			MaxLogFiles: 10,
+	// Load LSP configuration - HARD FAIL if config is missing or invalid
+	config, attempts, err := tryLoadConfig(confPath, configDir, cwd)
+	if err != nil {
+		// Provide detailed error message showing all attempted paths
+		fmt.Fprintf(os.Stderr, "ERROR: Failed to load LSP configuration\n\n")
+		fmt.Fprintf(os.Stderr, "Attempted paths:\n")
+
+		for _, attempt := range attempts {
+			if attempt.exists {
+				fmt.Fprintf(os.Stderr, "  ✗ %s\n", attempt.path)
+				fmt.Fprintf(os.Stderr, "    → File exists but failed to load: %v\n\n", attempt.err)
+			} else {
+				fmt.Fprintf(os.Stderr, "  ✗ %s\n", attempt.path)
+				fmt.Fprintf(os.Stderr, "    → %v\n\n", attempt.err)
+			}
 		}
 
-		// Create minimal default LSP config so bridge can initialize
-		config = &lsp.LSPServerConfig{
-			LanguageServers:      make(map[types.LanguageServer]lsp.LanguageServerConfig),
-			LanguageServerMap:    make(map[types.LanguageServer][]types.Language),
-			ExtensionLanguageMap: make(map[string]types.Language),
-			Global: struct {
-				LogPath            string `json:"log_file_path"`
-				LogLevel           string `json:"log_level"`
-				MaxLogFiles        int    `json:"max_log_files"`
-				MaxRestartAttempts int    `json:"max_restart_attempts"`
-				RestartDelayMs     int    `json:"restart_delay_ms"`
-			}{
-				LogPath:     defaultLogPath,
-				LogLevel:    "debug",
-				MaxLogFiles: 10,
-			},
-		}
+		fmt.Fprintf(os.Stderr, "No valid configuration found.\n\n")
+		fmt.Fprintf(os.Stderr, "For configuration instructions, see:\n")
+		fmt.Fprintf(os.Stderr, "  https://github.com/rockerboo/mcp-lsp-bridge#configuration\n\n")
+		fmt.Fprintf(os.Stderr, "The application requires a valid configuration with at least one language server.\n")
+		os.Exit(1)
+	}
 
-		// Ensure user is aware of configuration failure
-		fmt.Fprintln(os.Stderr, "NOTICE: Using minimal default configuration. LSP functionality will be limited.")
-	} else {
-		logConfig = logger.LoggerConfig{
-			LogPath:     config.Global.LogPath,
-			LogLevel:    config.Global.LogLevel,
-			MaxLogFiles: config.Global.MaxLogFiles,
-		}
+	// Set up logging configuration from loaded config
+	logConfig := logger.LoggerConfig{
+		LogPath:     config.Global.LogPath,
+		LogLevel:    config.Global.LogLevel,
+		LogOutput:   config.Global.LogOutput,
+		MaxLogFiles: config.Global.MaxLogFiles,
 	}
 
 	// Override with command-line flags if provided
@@ -208,13 +230,32 @@ func main() {
 
 	logger.Info("Starting MCP-LSP Bridge...")
 
-	cwd, err := os.Getwd()
-	if err != nil {
-		panic("Failed to get current working directory: " + err.Error())
+	// Log the loaded configuration summary
+	logger.Info(fmt.Sprintf("Configuration loaded successfully: %d language servers, %d language mappings, %d extension mappings",
+		len(config.LanguageServers), len(config.LanguageServerMap), len(config.ExtensionLanguageMap)))
+
+	// Log each configured language server with its supported languages
+	for serverName, serverConfig := range config.LanguageServers {
+		if languages, ok := config.LanguageServerMap[serverName]; ok {
+			logger.Info(fmt.Sprintf("  ✓ Server '%s' -> languages: %v, command: %s %v",
+				serverName, languages, serverConfig.Command, serverConfig.Args))
+		} else {
+			logger.Warn(fmt.Sprintf("  ⚠ Server '%s' has configuration but no language mapping!", serverName))
+		}
 	}
 
-	// Create and initialize the bridge
+	// Create and initialize the bridge (cwd already obtained earlier)
 	bridgeInstance := bridge.NewMCPLSPBridge(config, []string{cwd})
+
+	// Verify config is still valid after bridge creation
+	logger.Info(fmt.Sprintf("Bridge created. Verifying config: %d language servers in config", len(config.LanguageServers)))
+	bridgeConfig := bridgeInstance.GetConfig()
+	if bridgeConfig != nil {
+		servers := bridgeConfig.GetLanguageServers()
+		logger.Info(fmt.Sprintf("Bridge GetConfig().GetLanguageServers() returns: %d servers", len(servers)))
+	} else {
+		logger.Error("Bridge GetConfig() returned nil!")
+	}
 
 	// Setup MCP server with bridge
 	mcpServer := mcpserver.SetupMCPServer(bridgeInstance)

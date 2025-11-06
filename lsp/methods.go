@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/myleshyson/lsprotocol-go/protocol"
@@ -50,8 +52,112 @@ func (lc *LanguageClient) Exit() error {
 	return lc.SendNotification("exit", nil)
 }
 
+// IsDocumentOpen checks if a document is currently open
+func (lc *LanguageClient) IsDocumentOpen(uri string) bool {
+	lc.openDocumentsMutex.RLock()
+	defer lc.openDocumentsMutex.RUnlock()
+	return lc.openDocuments[protocol.DocumentUri(uri)]
+}
+
+// MarkDocumentOpen marks a document as open (internal use)
+func (lc *LanguageClient) MarkDocumentOpen(uri string) {
+	lc.openDocumentsMutex.Lock()
+	defer lc.openDocumentsMutex.Unlock()
+	lc.openDocuments[protocol.DocumentUri(uri)] = true
+}
+
+// MarkDocumentClosed marks a document as closed (internal use)
+func (lc *LanguageClient) MarkDocumentClosed(uri string) {
+	lc.openDocumentsMutex.Lock()
+	defer lc.openDocumentsMutex.Unlock()
+	delete(lc.openDocuments, protocol.DocumentUri(uri))
+}
+
+// inferLanguageId infers the language ID from a file URI
+func inferLanguageId(uri string) protocol.LanguageKind {
+	// Extract file extension
+	filePath := strings.TrimPrefix(uri, "file://")
+	lastDot := strings.LastIndex(filePath, ".")
+	if lastDot == -1 {
+		return "plaintext" // Default to plaintext
+	}
+
+	ext := filePath[lastDot+1:]
+
+	// Map extensions to language IDs
+	switch ext {
+	case "ts":
+		return protocol.LanguageKindTypeScript
+	case "tsx":
+		return protocol.LanguageKindTypeScriptReact
+	case "js":
+		return protocol.LanguageKindJavaScript
+	case "jsx":
+		return protocol.LanguageKindJavaScriptReact
+	case "go":
+		return protocol.LanguageKindGo
+	case "py":
+		return protocol.LanguageKindPython
+	case "rs":
+		return protocol.LanguageKindRust
+	case "java":
+		return protocol.LanguageKindJava
+	case "c":
+		return protocol.LanguageKindC
+	case "cpp", "cc", "cxx":
+		return protocol.LanguageKindCPP
+	case "cs":
+		return protocol.LanguageKindCSharp
+	case "php":
+		return protocol.LanguageKindPHP
+	case "rb":
+		return protocol.LanguageKindRuby
+	case "swift":
+		return protocol.LanguageKindSwift
+	case "kt":
+		return "kotlin" // Not defined as constant, use string literal
+	case "md":
+		return protocol.LanguageKindMarkdown
+	case "html":
+		return protocol.LanguageKindHTML
+	case "css":
+		return protocol.LanguageKindCSS
+	case "json":
+		return protocol.LanguageKindJSON
+	case "xml":
+		return protocol.LanguageKindXML
+	case "yaml", "yml":
+		return protocol.LanguageKindYAML
+	default:
+		return "plaintext" // Default to plaintext
+	}
+}
+
+// EnsureDocumentOpen ensures a document is open, opening it if necessary
+func (lc *LanguageClient) EnsureDocumentOpen(uri string, languageId protocol.LanguageKind) error {
+	// Check if already open
+	if lc.IsDocumentOpen(uri) {
+		return nil
+	}
+
+	// Read file content
+	filePath := strings.TrimPrefix(uri, "file://")
+	content, err := os.ReadFile(filePath)
+	if err != nil {
+		return fmt.Errorf("failed to read file %s: %w", filePath, err)
+	}
+
+	// Open the document
+	return lc.DidOpen(uri, languageId, string(content), 0)
+}
+
 // DidOpen sends a textDocument/didOpen notification
 func (lc *LanguageClient) DidOpen(uri string, languageId protocol.LanguageKind, text string, version int32) error {
+	// Check if document is already open
+	if lc.IsDocumentOpen(uri) {
+		return fmt.Errorf("document is already open: %s", uri)
+	}
+
 	params := protocol.DidOpenTextDocumentParams{
 		TextDocument: protocol.TextDocumentItem{
 			Uri:        protocol.DocumentUri(uri),
@@ -61,7 +167,14 @@ func (lc *LanguageClient) DidOpen(uri string, languageId protocol.LanguageKind, 
 		},
 	}
 
-	return lc.SendNotification("textDocument/didOpen", params)
+	err := lc.SendNotification("textDocument/didOpen", params)
+	if err != nil {
+		return err
+	}
+
+	// Mark document as open after successful notification
+	lc.MarkDocumentOpen(uri)
+	return nil
 }
 
 // DidChange sends a textDocument/didChange notification
@@ -93,13 +206,25 @@ func (lc *LanguageClient) DidSave(uri string, text *string) error {
 
 // DidClose sends a textDocument/didClose notification
 func (lc *LanguageClient) DidClose(uri string) error {
+	// Check if document is actually open
+	if !lc.IsDocumentOpen(uri) {
+		return fmt.Errorf("document is not open: %s", uri)
+	}
+
 	params := protocol.DidCloseTextDocumentParams{
 		TextDocument: protocol.TextDocumentIdentifier{
 			Uri: protocol.DocumentUri(uri),
 		},
 	}
 
-	return lc.SendNotification("textDocument/didClose", params)
+	err := lc.SendNotification("textDocument/didClose", params)
+	if err != nil {
+		return err
+	}
+
+	// Mark document as closed after successful notification
+	lc.MarkDocumentClosed(uri)
+	return nil
 }
 
 func (lc *LanguageClient) WorkspaceSymbols(query string) ([]protocol.WorkspaceSymbol, error) {
@@ -117,6 +242,7 @@ func (lc *LanguageClient) WorkspaceSymbols(query string) ([]protocol.WorkspaceSy
 
 // Definition requests definition locations for a symbol at a given position
 // Returns LocationLink[] or converts Location[] to LocationLink[]
+// Note: Document opening is handled at the bridge level per-server
 func (lc *LanguageClient) Definition(uri string, line, character uint32) ([]protocol.Or2[protocol.LocationLink, protocol.Location], error) {
 	// Use raw JSON response to handle both Location[] and LocationLink[] formats
 	var rawResult json.RawMessage
@@ -146,6 +272,7 @@ func (lc *LanguageClient) Definition(uri string, line, character uint32) ([]prot
 }
 
 // References finds all references to a symbol at a given position
+// Note: Document opening is handled at the bridge level per-server
 func (lc *LanguageClient) References(uri string, line, character uint32, includeDeclaration bool) ([]protocol.Location, error) {
 	var result []protocol.Location
 
@@ -169,6 +296,7 @@ func (lc *LanguageClient) References(uri string, line, character uint32, include
 }
 
 // Hover provides hover information at a given position
+// Note: Document opening is handled at the bridge level per-server
 func (lc *LanguageClient) Hover(uri string, line, character uint32) (*protocol.Hover, error) {
 	params := protocol.HoverParams{
 		TextDocument: protocol.TextDocumentIdentifier{
@@ -264,6 +392,7 @@ func (lc *LanguageClient) Implementation(uri string, line, character uint32) ([]
 }
 
 // SignatureHelp provides signature help at a given position
+// Note: Document opening is handled at the bridge level per-server
 func (lc *LanguageClient) SignatureHelp(uri string, line, character uint32) (*protocol.SignatureHelp, error) {
 	params := protocol.SignatureHelpParams{
 		TextDocument: protocol.TextDocumentIdentifier{
@@ -297,8 +426,8 @@ func (lc *LanguageClient) SignatureHelp(uri string, line, character uint32) (*pr
 	return &result, nil
 }
 
+// Note: Document opening is handled at the bridge level per-server
 func (lc *LanguageClient) CodeActions(uri string, line, character, endLine, endCharacter uint32) ([]protocol.CodeAction, error) {
-
 	params := protocol.CodeActionParams{
 		TextDocument: protocol.TextDocumentIdentifier{Uri: protocol.DocumentUri(uri)},
 		Range: protocol.Range{
@@ -306,7 +435,7 @@ func (lc *LanguageClient) CodeActions(uri string, line, character, endLine, endC
 			End:   protocol.Position{Line: endLine, Character: endCharacter},
 		},
 		Context: protocol.CodeActionContext{
-			// Context can be empty for general code actions
+			Diagnostics: []protocol.Diagnostic{}, // Must be empty array, not nil
 		},
 	}
 
@@ -356,6 +485,7 @@ func (lc *LanguageClient) WorkspaceDiagnostic(identifier string) (*protocol.Work
 	return &result, nil
 }
 
+// Note: Document opening is handled at the bridge level per-server
 func (lc *LanguageClient) Formatting(uri string, tabSize uint32, insertSpaces bool) ([]protocol.TextEdit, error) {
 	params := protocol.DocumentFormattingParams{
 		TextDocument: protocol.TextDocumentIdentifier{Uri: protocol.DocumentUri(uri)},

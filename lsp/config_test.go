@@ -218,3 +218,71 @@ func cleanupDir(t *testing.T, dir string) func() {
 		}
 	}
 }
+
+// TestGetPreferredFormatter tests the GetPreferredFormatter method
+func TestGetPreferredFormatter(t *testing.T) {
+	testCases := []struct {
+		name              string
+		config            *LSPServerConfig
+		language          string
+		expectedFormatter types.LanguageServer
+	}{
+		{
+			name: "Returns configured formatter",
+			config: &LSPServerConfig{
+				PreferredFormatters: map[string]string{
+					"typescript": "prettier",
+					"javascript": "biome",
+					"python":     "black",
+				},
+			},
+			language:          "typescript",
+			expectedFormatter: "prettier",
+		},
+		{
+			name: "Returns empty string for unconfigured language",
+			config: &LSPServerConfig{
+				PreferredFormatters: map[string]string{
+					"typescript": "prettier",
+				},
+			},
+			language:          "go",
+			expectedFormatter: "",
+		},
+		{
+			name:              "Returns empty string when PreferredFormatters is nil",
+			config:            &LSPServerConfig{},
+			language:          "typescript",
+			expectedFormatter: "",
+		},
+		{
+			name: "Returns empty string when PreferredFormatters is empty map",
+			config: &LSPServerConfig{
+				PreferredFormatters: map[string]string{},
+			},
+			language:          "typescript",
+			expectedFormatter: "",
+		},
+		{
+			name: "Returns configured formatter for another language",
+			config: &LSPServerConfig{
+				PreferredFormatters: map[string]string{
+					"typescript": "prettier",
+					"javascript": "biome",
+					"python":     "black",
+				},
+			},
+			language:          "python",
+			expectedFormatter: "black",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			result := tc.config.GetPreferredFormatter(tc.language)
+			if result != tc.expectedFormatter {
+				t.Errorf("GetPreferredFormatter(%q) = %q, want %q", tc.language, result, tc.expectedFormatter)
+			}
+		})
+	}
+}

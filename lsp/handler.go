@@ -5,29 +5,77 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/myleshyson/lsprotocol-go/protocol"
 	"github.com/sourcegraph/jsonrpc2"
 	"rockerboo/mcp-lsp-bridge/logger"
+	"rockerboo/mcp-lsp-bridge/utils"
 )
 
 // ClientHandler handles incoming messages from the language server
 type ClientHandler struct {
 	// Configuration context for responding to workspace/configuration requests
 	client ClientContextProvider
+	// Callback function called when diagnostics are received
+	diagnosticsCallback func(uri string)
+}
+
+// SetDiagnosticsCallback sets a callback to be called when diagnostics are received
+func (h *ClientHandler) SetDiagnosticsCallback(callback func(uri string)) {
+	h.diagnosticsCallback = callback
 }
 
 // ClientContextProvider provides context information for the handler
 type ClientContextProvider interface {
 	ProjectRoots() []string
 	InitializationSettings() map[string]interface{}
+	GetWorkspaceConfiguration() map[string]interface{}
 }
 
 func (h *ClientHandler) Handle(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.Request) {
 	switch req.Method {
 	case "textDocument/publishDiagnostics":
-		// Handle diagnostics
-		var params any
+		// Handle diagnostics - store in cache
+		var params protocol.PublishDiagnosticsParams
 		if err := json.Unmarshal(*req.Params, &params); err == nil {
-			logger.Debug(fmt.Sprintf("Diagnostics: %+v\n", params))
+			// Type assert to access cache methods
+			if client, ok := h.client.(*LanguageClient); ok {
+				// Normalize the URI before storing to ensure consistent lookups
+				normalizedURI := protocol.DocumentUri(utils.NormalizeURI(string(params.Uri)))
+
+				client.diagnosticMutex.Lock()
+				client.diagnosticCache[normalizedURI] = params.Diagnostics
+				client.diagnosticMutex.Unlock()
+
+				// Enhanced logging to track URI normalization
+				if string(params.Uri) != string(normalizedURI) {
+					logger.Debug(fmt.Sprintf("Cached %d diagnostics | Raw URI: %s | Normalized URI: %s",
+						len(params.Diagnostics), params.Uri, normalizedURI))
+				} else {
+					logger.Debug(fmt.Sprintf("Cached %d diagnostics for %s", len(params.Diagnostics), normalizedURI))
+				}
+
+				// Notify subscribers via callback
+				if h.diagnosticsCallback != nil {
+					h.diagnosticsCallback(string(normalizedURI))
+				}
+			} else {
+				logger.Debug(fmt.Sprintf("Diagnostics received but client doesn't support caching: %+v\n", params))
+			}
+		}
+
+	case "textDocument/didClose":
+		// Clean up cached diagnostics for closed files
+		var params protocol.DidCloseTextDocumentParams
+		if err := json.Unmarshal(*req.Params, &params); err == nil {
+			if client, ok := h.client.(*LanguageClient); ok {
+				// Normalize URI to match how it was stored in cache
+				normalizedURI := protocol.DocumentUri(utils.NormalizeURI(string(params.TextDocument.Uri)))
+
+				client.diagnosticMutex.Lock()
+				delete(client.diagnosticCache, normalizedURI)
+				client.diagnosticMutex.Unlock()
+				logger.Debug(fmt.Sprintf("Cleared diagnostics cache for closed file: %s", normalizedURI))
+			}
 		}
 
 	case "window/showMessage":
@@ -110,59 +158,67 @@ func (h *ClientHandler) handleWorkspaceConfiguration(ctx context.Context, conn *
 func (h *ClientHandler) buildConfigurationResponse(item ConfigurationItem) any {
 	logger.Debug(fmt.Sprintf("Building configuration for section: '%s', scopeUri: '%s'", item.Section, item.ScopeURI))
 
-	// Get settings from client
-	settings := h.client.InitializationSettings()
-	logger.Debug(fmt.Sprintf("InitializationSettings: %+v", settings))
+	// Get workspace configuration
+	workspaceConfig := h.client.GetWorkspaceConfiguration()
+	logger.Debug(fmt.Sprintf("WorkspaceConfiguration available: %v", workspaceConfig != nil))
 
-	// If no section specified, check if we have settings to return
+	// Create template context for variable substitution
+	var templateCtx *utils.TemplateContext
+	workspaceFolders := h.client.ProjectRoots()
+	if len(workspaceFolders) > 0 {
+		templateCtx = utils.NewTemplateContext(workspaceFolders[0])
+		logger.Debug(fmt.Sprintf("Template context created for workspace: %s", workspaceFolders[0]))
+	}
+
+	// If no section specified, check workspace config first
 	if item.Section == "" {
-		// If we have custom settings, return them
+		// Check if we have workspace configuration
+		if workspaceConfig != nil && len(workspaceConfig) > 0 {
+			logger.Debug("No section specified, returning all workspace configuration")
+			if templateCtx != nil {
+				substituted := templateCtx.SubstituteInMap(workspaceConfig)
+				logger.Debug(fmt.Sprintf("Applied template substitution to all workspace config"))
+				return substituted
+			}
+			return workspaceConfig
+		}
+
+		// Fallback to initialization settings
+		settings := h.client.InitializationSettings()
 		if len(settings) > 0 {
-			logger.Debug("No section specified, returning all settings")
+			logger.Debug("No section specified, returning all initialization settings")
 			return settings
 		}
 
-		// Otherwise, provide default ESLint configuration for empty section requests
-		// vscode-eslint-language-server requests section:"" and expects full config
-		logger.Debug("No section and no custom settings, building default ESLint config")
-		eslintConfig := map[string]any{
-			"enable":         true,
-			"packageManager": "npm",    // REQUIRED - fixes moduleResolveWorkingDirectory undefined
-			"validate":       "on",     // REQUIRED - enables validation
-			"useFlatConfig":  true,     // Support flat config (eslint.config.js/ts)
-			"experimental": map[string]any{
-				"useFlatConfig": true,  // Experimental flag for ESLint < 8.57.0
-			},
-			"nodePath": nil,            // Explicit nil for default behavior
-			"options":  map[string]any{},
-		}
-
-		workspaceFolders := h.client.ProjectRoots()
-		if len(workspaceFolders) > 0 {
-			// Add workspaceFolder for path resolution
-			eslintConfig["workspaceFolder"] = map[string]any{
-				"uri":  "file://" + workspaceFolders[0],
-				"name": "workspace",
-			}
-			// Add workingDirectory for ESLint execution
-			eslintConfig["workingDirectory"] = map[string]any{
-				"directory": workspaceFolders[0],
-			}
-			logger.Debug(fmt.Sprintf("Added workspaceFolder and workingDirectory: %s", workspaceFolders[0]))
-		}
-
-		logger.Debug(fmt.Sprintf("Returning ESLint config: %+v", eslintConfig))
-		return eslintConfig
+		// Last resort: return empty config
+		logger.Debug("No section and no config, returning empty object")
+		return map[string]any{}
 	}
 
-	// If section exists in settings, return it
+	// Try to find section in workspace configuration first
+	if workspaceConfig != nil {
+		if sectionConfig, exists := workspaceConfig[item.Section]; exists {
+			logger.Debug(fmt.Sprintf("Found workspace configuration for section '%s': %+v", item.Section, sectionConfig))
+
+			// Apply template variable substitution
+			if templateCtx != nil {
+				substituted := templateCtx.SubstituteInJSON(sectionConfig)
+				logger.Debug(fmt.Sprintf("Applied template substitution for section '%s'", item.Section))
+				return substituted
+			}
+			return sectionConfig
+		}
+	}
+
+	// Fallback to initialization settings
+	settings := h.client.InitializationSettings()
 	if sectionConfig, exists := settings[item.Section]; exists {
-		logger.Debug(fmt.Sprintf("Found custom configuration for section '%s': %+v", item.Section, sectionConfig))
+		logger.Debug(fmt.Sprintf("Found initialization settings for section '%s': %+v", item.Section, sectionConfig))
 		return sectionConfig
 	}
 
 	// Build default configuration based on common section names
-	logger.Debug(fmt.Sprintf("No custom config found for '%s', building default", item.Section))
+	logger.Debug(fmt.Sprintf("No config found for '%s', building default", item.Section))
 	config := h.buildDefaultConfiguration(item)
 
 	logger.Debug(fmt.Sprintf("Using default configuration for section '%s': %+v", item.Section, config))

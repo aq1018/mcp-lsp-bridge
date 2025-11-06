@@ -1,4 +1,32 @@
 {
+  "_comment": "TEMPLATE VARIABLES: Use {{workspace_root}} (file:// URI), {{workspace_name}} (dir basename), {{workspace_path}} (absolute path) anywhere in this config",
+  "_template_examples": {
+    "import_with_template": "{{workspace_path}}/.lsp_servers/typescript.json",
+    "command_with_template": "{{workspace_path}}/bin/custom-lsp",
+    "args_with_template": ["--log", "{{workspace_path}}/logs/lsp.log", "--name", "{{workspace_name}}"]
+  },
+  "_comment_imports": "Optional: Import other config files (supports template variables in paths)",
+  "imports": [
+    "./.lsp_servers/typescript.json",
+    "./.lsp_servers/python.json"
+  ],
+  "global": {
+    "_comment": "Global configuration options (supports template variables)",
+    "log_file_path": "~/.local/share/mcp-lsp-bridge/logs/mcp-lsp-bridge.log",
+    "log_level": "info",
+    "log_output": "stderr",
+    "_log_output_comment": "Options: 'file' (default), 'stderr', or 'both'. Use 'stderr' or 'both' since MCP uses stdin/stdout",
+    "max_log_files": 10,
+    "max_restart_attempts": 3,
+    "restart_delay_ms": 1000
+  },
+  "_comment_preferred_formatters": "Optional: Map language -> preferred formatter server name. Used when multiple servers handle formatting for a language.",
+  "preferred_formatters": {
+    "_example_comment": "When multiple servers support formatting (e.g., prettier, biome, eslint for TypeScript), this specifies which to prefer",
+    "typescript": "prettier",
+    "javascript": "biome",
+    "python": "black"
+  },
   "language_servers": {
     "gopls": {
       "command": "gopls",
