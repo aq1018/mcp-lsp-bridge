@@ -9,7 +9,7 @@ import (
 type BridgeInterface interface {
 	ConfigManager
 	InformationProvider
-	// ProjectRootManager
+	ProjectRootManager
 	ClientManager
 	LanguageDetector
 	DirectoryManager
@@ -44,6 +44,7 @@ type EditProvider interface {
 
 type DiagnosticsProvider interface {
 	GetWorkspaceDiagnostics(workspaceUri string, identifier string) ([]protocol.WorkspaceDiagnosticReport, error)
+	GetDocumentDiagnostics(uri string, identifier string, previousResultId string) (*protocol.DocumentDiagnosticReport, error)
 }
 
 type SymbolNavigator interface {
@@ -63,8 +64,10 @@ type DirectoryManager interface {
 
 type ClientManager interface {
 	GetClientForLanguage(language string) (types.LanguageClientInterface, error)
+	GetAllClientsForLanguage(language string) ([]types.LanguageClientInterface, []types.LanguageServer, error)
 	GetMultiLanguageClients(languages []string) (map[types.Language]types.LanguageClientInterface, error)
 	CloseAllClients()
+	SetDiagnosticsCallback(callback func(uri string))
 }
 
 type ConfigManager interface {
@@ -78,7 +81,7 @@ type LanguageDetector interface {
 	DetectPrimaryProjectLanguage(projectPath string) (*types.Language, error)
 }
 
-// type ProjectRootManager interface {
-// 	ProjectRoots() ([]string, error)
-// 	SetProjectRoots(paths []string)
-// }
+type ProjectRootManager interface {
+	SetWorkspaceRoots(paths []string)
+	GetWorkspaceRoots() []string
+}
