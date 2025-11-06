@@ -178,3 +178,35 @@ func (m *MockBridge) GetDocumentSymbols(uri string) ([]protocol.DocumentSymbol, 
 	args := m.Called(uri)
 	return args.Get(0).([]protocol.DocumentSymbol), args.Error(1)
 }
+
+func (m *MockBridge) GetAllClientsForLanguage(language string) ([]types.LanguageClientInterface, []types.LanguageServer, error) {
+	args := m.Called(language)
+	if args.Get(0) == nil {
+		return nil, nil, args.Error(2)
+	}
+	return args.Get(0).([]types.LanguageClientInterface), args.Get(1).([]types.LanguageServer), args.Error(2)
+}
+
+func (m *MockBridge) SetWorkspaceRoots(paths []string) {
+	m.Called(paths)
+}
+
+func (m *MockBridge) GetWorkspaceRoots() []string {
+	args := m.Called()
+	if args.Get(0) == nil {
+		return nil
+	}
+	return args.Get(0).([]string)
+}
+
+func (m *MockBridge) GetDocumentDiagnostics(uri string, identifier string, previousResultId string) (*protocol.DocumentDiagnosticReport, error) {
+	args := m.Called(uri, identifier, previousResultId)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*protocol.DocumentDiagnosticReport), args.Error(1)
+}
+
+func (m *MockBridge) SetDiagnosticsCallback(callback func(uri string)) {
+	m.Called(callback)
+}

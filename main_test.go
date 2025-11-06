@@ -20,7 +20,7 @@ func createTestConfig() *lsp.LSPServerConfig {
 	// Use an allowed directory for config
 	allowedDirs := []string{cwd, "."}
 
-	config, err := lsp.LoadLSPConfig("lsp_config.example.json", allowedDirs)
+	config, err := lsp.LoadLSPConfig("lsp_config.example.json", allowedDirs, cwd)
 	if err != nil {
 		// Fallback to a minimal config if file doesn't exist
 		return &lsp.LSPServerConfig{
@@ -379,7 +379,7 @@ func TestTryLoadConfig(t *testing.T) {
 			// For CI/Docker compatibility, add the temp directory to allowed paths
 			tempDir := filepath.Dir(primaryPath)
 			allowedDirs := []string{tempDir, configDir, "."}
-			config, err := tryLoadConfig(primaryPath, configDir, allowedDirs)
+			config, _, err := tryLoadConfig(primaryPath, configDir, tempDir, allowedDirs)
 
 			if tt.expectSuccess {
 				require.NoError(t, err)
